@@ -131,10 +131,13 @@ const API = {
   // 日K线
   kline: (secid, lmt = 90) => jsonp(`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=${lmt}&end=20500101&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`, 'cb', 60000),
 
-  // 当日主力资金
+  // 当日主力资金（主源：push2delay 延时主机，与 push2 结构一致但更不易被限流/封禁，沙箱与手机均通）
+  flowTodayDelay: secid => jsonp(`https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=${secid}&fields=f12,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87`, 'cb', 20000),
+
+  // 当日主力资金（备用：push2 主网关，手机端可用，沙箱可能被封）
   flowToday: secid => jsonp(`https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=${secid}&fields=f12,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87`, 'cb', 20000),
 
-  // 历史资金流（日）
+  // 历史资金流（日）——来自 push2his，手机端正常；沙箱预览网络会限制，不影响今日卡渲染
   flowHistory: secid => jsonp(`https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=40&klt=101&secid=${secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65`, 'cb', 60000),
 
   // 公司基本信息（行业 / 主营 / 上市日期）
@@ -721,26 +724,32 @@ async function loadFlow(silent) {
   const box = $('#pane-flow');
   if (!silent) box.innerHTML = '<div class="card"><div class="loading">加载中…</div></div>';
   try {
-    const [td, hs] = await Promise.allSettled([API.flowToday(state.stock.secid), API.flowHistory(state.stock.secid)]);
-    const tRaw = td.status === 'fulfilled' ? td.value?.data?.diff?.[0] : null;
-    const kl = hs.status === 'fulfilled' ? (hs.value?.data?.klines || []) : [];
+    const secid = state.stock.secid;
+    // 今日资金流：优先用 push2delay（延时主机，结构与 push2 一致，且不易被限流/封禁，沙箱与手机均通），失败再回退 push2 主网关
+    let tRaw = null;
+    try { const r = await API.flowTodayDelay(secid); tRaw = r?.data?.diff?.[0] || null; } catch (e) {}
+    if (!tRaw) { try { const r = await API.flowToday(secid); tRaw = r?.data?.diff?.[0] || null; } catch (e) {} }
+    // 历史资金流（近20日图/连续天数/累计）来自 push2his，手机端正常；沙箱预览网络限制时可能为空，不影响今日卡
+    let kl = [];
+    try { const r = await API.flowHistory(secid); kl = r?.data?.klines || []; } catch (e) {}
     let parsed = [];
     if (kl.length) {
       parsed = kl.map(s => { const a = s.split(','); return { d: a[0], main: Number(a[1]), small: Number(a[2]), mid: Number(a[3]), big: Number(a[4]), huge: Number(a[5]), ratio: Number(a[6]), close: Number(a[11]), chg: Number(a[12]) }; });
     }
-    // 容错：今日资金流接口失败时，用历史最后一日推导，避免资金页无备用源而整页报错
+    // 容错：今日接口双双失败时，若历史有数据则用末日推导，避免整页报错
     let t = tRaw;
     if (!t && parsed.length) {
       const last = parsed[parsed.length - 1];
       t = { f62: last.main, f184: last.ratio, f66: last.huge, f69: null, f72: last.big, f75: null, f78: last.mid, f81: null, f84: last.small, f87: null, _derived: true };
     }
-    if (!t && !parsed.length) throw new Error('资金接口暂时无响应（可能触发行情网关限流），请点「重试」或稍后再试');
+    if (!t && !parsed.length) throw new Error('资金数据暂时无响应（行情网关可能限流），请点「重试」或稍后再试');
 
     let html = '';
+    let levels = null;
 
     if (t) {
       const main = num(t.f62), ratio = num(t.f184);
-      const levels = [
+      levels = [
         ['超大单', num(t.f66), num(t.f69)],
         ['大单', num(t.f72), num(t.f75)],
         ['中单', num(t.f78), num(t.f81)],
@@ -768,11 +777,12 @@ async function loadFlow(silent) {
         </div></div>`;
     }
 
+    let streak = 0, dir = 0;
+    let sum = null;
     if (parsed.length) {
       const last20 = parsed.slice(-20);
-      const sum = n => parsed.slice(-n).reduce((s, x) => s + x.main, 0);
+      sum = n => parsed.slice(-n).reduce((s, x) => s + x.main, 0);
       // 连续净流入/流出天数
-      let streak = 0, dir = 0;
       for (let i = parsed.length - 1; i >= 0; i--) {
         const s = Math.sign(parsed[i].main); if (!s) break;
         if (dir === 0) { dir = s; streak = 1; } else if (s === dir) streak++; else break;
@@ -801,6 +811,8 @@ async function loadFlow(silent) {
             <td class="${cls(r.main)}">${moneySign(r.main)}</td>
             <td class="${cls(r.ratio)}">${pctSign(r.ratio)}</td></tr>`).join('')}
         </table></div></div>`;
+    } else {
+      html += `<div class="card"><div class="score-note">近20日走势图与逐日明细依赖历史资金流接口（push2his），当前网络暂未返回数据，不影响上方「今日主力净流入」的准确性。在手机浏览器中通常可正常显示。</div></div>`;
     }
 
     state.flow = { main: t ? num(t.f62) : null, ratio: t ? num(t.f184) : null, levels: t ? levels : null, sum5: parsed.length ? sum(5) : null, sum10: parsed.length ? sum(10) : null, sum20: parsed.length ? sum(20) : null, streak, dir, lastDate: parsed.length ? parsed[parsed.length - 1].d : null };

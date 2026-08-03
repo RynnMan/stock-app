@@ -1,0 +1,13 @@
+{
+  "name": "个股透视 · 基本面/资金/新闻",
+  "short_name": "个股透视",
+  "description": "一个页面看清一只股票的基本面、主力资金与利好利空舆情",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2f3f5",
+  "theme_color": "#f2f3f5",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

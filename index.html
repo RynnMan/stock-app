@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="个股透视">
+<meta name="theme-color" content="#f5f6f8">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>个股透视 · 基本面 / 资金 / 新闻</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 顶部搜索 -->
+<header class="topbar">
+  <div class="search-wrap">
+    <svg class="ico-search" viewBox="0 0 24 24"><path d="M10 2a8 8 0 105.29 14.03l4.35 4.34 1.41-1.41-4.34-4.35A8 8 0 0010 2zm0 2a6 6 0 110 12 6 6 0 010-12z"/></svg>
+    <input id="searchInput" type="search" autocomplete="off" placeholder="输入股票代码 / 名称 / 拼音，如 600519">
+    <button id="clearBtn" class="clear-btn" hidden>&times;</button>
+  </div>
+  <button id="favBtn" class="fav-btn" title="自选">
+    <svg viewBox="0 0 24 24"><path d="M12 17.27l5.18 3.13-1.37-5.89 4.57-3.96-6.02-.52L12 4.5 9.64 10.03l-6.02.52 4.57 3.96-1.37 5.89z"/></svg>
+  </button>
+  <div id="suggestBox" class="suggest" hidden></div>
+</header>
+
+<!-- 自选抽屉 -->
+<div id="favPanel" class="fav-panel" hidden>
+  <div class="fav-head"><span>我的自选</span><button id="favClose">关闭</button></div>
+  <div id="favList" class="fav-list"></div>
+</div>
+
+<main id="main">
+
+  <!-- 行情头部 -->
+  <section class="quote-card" id="quoteCard">
+    <div class="skeleton-quote">加载中…</div>
+  </section>
+
+  <!-- 内容区 -->
+  <section class="pane" id="pane-basic"></section>
+  <section class="pane" id="pane-flow" hidden></section>
+  <section class="pane" id="pane-hold" hidden></section>
+  <section class="pane" id="pane-news" hidden></section>
+
+  <footer class="disclaimer">
+    数据来源：东方财富公开行情接口 · 仅供研究参考，不构成任何投资建议<br>
+    <span id="updateTime"></span>
+  </footer>
+</main>
+
+<!-- 底部导航 -->
+<nav class="tabbar">
+  <button class="tab active" data-tab="basic">
+    <svg viewBox="0 0 24 24"><path d="M4 20h16v-2H4v2zM6.5 16h2V9h-2v7zm4.5 0h2V4h-2v12zm4.5 0h2v-5h-2v5z"/></svg>
+    <span>基本面</span>
+  </button>
+  <button class="tab" data-tab="flow">
+    <svg viewBox="0 0 24 24"><path d="M3.5 18.5l6-6 4 4L22 7.9 20.6 6.5l-7.1 8.1-4-4L2 17l1.5 1.5z"/></svg>
+    <span>资金</span>
+  </button>
+  <button class="tab" data-tab="hold">
+    <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 3-1.34 3-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+    <span>持仓</span>
+  </button>
+  <button class="tab" data-tab="news">
+    <svg viewBox="0 0 24 24"><path d="M20 3H4a2 2 0 00-2 2v14a2 2 0 002 2h16a2 2 0 002-2V5a2 2 0 00-2-2zm-1 15H5V6h14v12zM7 8h10v2H7V8zm0 4h10v2H7v-2zm0 4h6v2H7v-2z"/></svg>
+    <span>新闻</span>
+    <i id="newsDot" class="dot" hidden></i>
+  </button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>

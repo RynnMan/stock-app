@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "name": "stock-app",
+  "buildCommand": null,
+  "outputDirectory": ".",
+  "framework": null,
+  "github": { "silent": true }
+}

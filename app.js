@@ -135,7 +135,7 @@ const API = {
   flowToday: secid => jsonp(`https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=${secid}&fields=f12,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87`, 'cb', 20000),
 
   // 历史资金流（日）
-  flowHistory: secid => jsonp(`https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=0&klt=101&secid=${secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65`, 'cb', 60000),
+  flowHistory: secid => jsonp(`https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=40&klt=101&secid=${secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65`, 'cb', 60000),
 
   // 公司基本信息（行业 / 主营 / 上市日期）
   orgInfo: secucode => jsonp(`https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_BASIC_ORGINFO&columns=SECUCODE,SECURITY_NAME_ABBR,INDUSTRYCSRC1,EM2016,LISTING_DATE,ORG_PROFILE,MAIN_BUSINESS&filter=(SECUCODE%3D%22${secucode}%22)&pageNumber=1&pageSize=1&source=HSF10&client=PC`, 'callback', 3600000),
@@ -427,6 +427,7 @@ async function load(stock) {
   state.basic = null;
   state.flow = null;
   clearInterval(state.timer);
+  if (state.timerFlow) clearInterval(state.timerFlow);
 
   renderQuoteLoading();
   ['basic', 'flow', 'hold', 'news'].forEach(k => { $('#pane-' + k).innerHTML = '<div class="card"><div class="loading">加载中…</div></div>'; });
@@ -438,7 +439,9 @@ async function load(stock) {
   sleep(1000).then(loadHold);
   sleep(1400).then(loadIndustryThenNews);
 
-  state.timer = setInterval(() => { if (!document.hidden) { loadQuote(true); loadFlow(true); } }, 30000);
+  state.timer = setInterval(() => { if (!document.hidden) loadQuote(true); }, 30000);
+  // 资金流仅在该页激活时每 90 秒刷新，降低行情网关限流概率（资金页无备用源）
+  state.timerFlow = setInterval(() => { if (!document.hidden && state.activeTab === 'flow') loadFlow(true); }, 90000);
 }
 
 function buildSecucode(s) {
@@ -719,9 +722,19 @@ async function loadFlow(silent) {
   if (!silent) box.innerHTML = '<div class="card"><div class="loading">加载中…</div></div>';
   try {
     const [td, hs] = await Promise.allSettled([API.flowToday(state.stock.secid), API.flowHistory(state.stock.secid)]);
-    const t = td.status === 'fulfilled' ? td.value?.data?.diff?.[0] : null;
+    const tRaw = td.status === 'fulfilled' ? td.value?.data?.diff?.[0] : null;
     const kl = hs.status === 'fulfilled' ? (hs.value?.data?.klines || []) : [];
-    if (!t && !kl.length) throw new Error('暂无资金数据（该标的可能不支持资金流统计）');
+    let parsed = [];
+    if (kl.length) {
+      parsed = kl.map(s => { const a = s.split(','); return { d: a[0], main: Number(a[1]), small: Number(a[2]), mid: Number(a[3]), big: Number(a[4]), huge: Number(a[5]), ratio: Number(a[6]), close: Number(a[11]), chg: Number(a[12]) }; });
+    }
+    // 容错：今日资金流接口失败时，用历史最后一日推导，避免资金页无备用源而整页报错
+    let t = tRaw;
+    if (!t && parsed.length) {
+      const last = parsed[parsed.length - 1];
+      t = { f62: last.main, f184: last.ratio, f66: last.huge, f69: null, f72: last.big, f75: null, f78: last.mid, f81: null, f84: last.small, f87: null, _derived: true };
+    }
+    if (!t && !parsed.length) throw new Error('资金接口暂时无响应（可能触发行情网关限流），请点「重试」或稍后再试');
 
     let html = '';
 
@@ -755,8 +768,7 @@ async function loadFlow(silent) {
         </div></div>`;
     }
 
-    if (kl.length) {
-      const parsed = kl.map(s => { const a = s.split(','); return { d: a[0], main: Number(a[1]), small: Number(a[2]), mid: Number(a[3]), big: Number(a[4]), huge: Number(a[5]), ratio: Number(a[6]), close: Number(a[11]), chg: Number(a[12]) }; });
+    if (parsed.length) {
       const last20 = parsed.slice(-20);
       const sum = n => parsed.slice(-n).reduce((s, x) => s + x.main, 0);
       // 连续净流入/流出天数
@@ -791,7 +803,7 @@ async function loadFlow(silent) {
         </table></div></div>`;
     }
 
-    state.flow = { main: t ? num(t.f62) : null, ratio: t ? num(t.f184) : null, levels: t ? levels : null, sum5: kl.length ? sum(5) : null, sum10: kl.length ? sum(10) : null, sum20: kl.length ? sum(20) : null, streak, dir, lastDate: parsed.length ? parsed[parsed.length - 1].d : null };
+    state.flow = { main: t ? num(t.f62) : null, ratio: t ? num(t.f184) : null, levels: t ? levels : null, sum5: parsed.length ? sum(5) : null, sum10: parsed.length ? sum(10) : null, sum20: parsed.length ? sum(20) : null, streak, dir, lastDate: parsed.length ? parsed[parsed.length - 1].d : null };
     box.innerHTML = html;
     if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
@@ -1085,6 +1097,13 @@ async function diagnose() {
 }
 
 /* ---------------- Tab 切换 ---------------- */
+function paneNeedsReload(k) {
+  const box = $('#pane-' + k);
+  if (!box) return false;
+  const h = box.innerHTML;
+  return h.includes('loading') || h.includes('errbox') || h.trim() === '';
+}
+
 $$('.tab').forEach(t => t.addEventListener('click', () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -1092,6 +1111,12 @@ $$('.tab').forEach(t => t.addEventListener('click', () => {
   state.activeTab = k;
   ['basic', 'flow', 'hold', 'news', 'diag'].forEach(x => $('#pane-' + x).hidden = x !== k);
   if (k === 'diag') renderDiag();
+  // 失败/未加载的数据页，切到时自动重试（资金页无备用源，限流后可在这一步自愈）
+  if ((k === 'flow' || k === 'hold' || k === 'news') && paneNeedsReload(k)) {
+    if (k === 'flow') loadFlow();
+    else if (k === 'hold') loadHold();
+    else loadIndustryThenNews();
+  }
   document.scrollingElement.scrollTo({ top: 0, behavior: 'smooth' });
 }));
 

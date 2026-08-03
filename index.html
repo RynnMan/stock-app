@@ -11,7 +11,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<title>个股透视 · 基本面 / 资金 / 新闻</title>
+<title>个股透视 · 基本面/资金/持仓/新闻/诊股</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -47,6 +47,7 @@
   <section class="pane" id="pane-flow" hidden></section>
   <section class="pane" id="pane-hold" hidden></section>
   <section class="pane" id="pane-news" hidden></section>
+  <section class="pane" id="pane-diag" hidden></section>
 
   <footer class="disclaimer">
     数据来源：东方财富公开行情接口 · 仅供研究参考，不构成任何投资建议<br>
@@ -72,6 +73,10 @@
     <svg viewBox="0 0 24 24"><path d="M20 3H4a2 2 0 00-2 2v14a2 2 0 002 2h16a2 2 0 002-2V5a2 2 0 00-2-2zm-1 15H5V6h14v12zM7 8h10v2H7V8zm0 4h10v2H7v-2zm0 4h6v2H7v-2z"/></svg>
     <span>新闻</span>
     <i id="newsDot" class="dot" hidden></i>
+  </button>
+  <button class="tab" data-tab="diag">
+    <svg viewBox="0 0 24 24"><path d="M12 2a2 2 0 00-2 2v1.1A7 7 0 005 12v3l-2 2v1h18v-1l-2-2v-3a7 7 0 00-5-6.9V4a2 2 0 00-2-2zm0 20a3 3 0 003-3H9a3 3 0 003 3z"/></svg>
+    <span>诊股</span>
   </button>
 </nav>
 

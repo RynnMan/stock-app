@@ -322,13 +322,20 @@ const state = {
   industry: '',
   newsTab: 'stock',
   newsCache: {},
-  timer: null
+  timer: null,
+  activeTab: 'basic',
+  basic: null,          // 基本面汇总（供诊股）
+  flow: null            // 资金流汇总（供诊股）
 };
 const LS = {
   get last() { try { return JSON.parse(localStorage.getItem('gp_last') || 'null'); } catch (e) { return null; } },
   set last(v) { localStorage.setItem('gp_last', JSON.stringify(v)); },
   get favs() { try { return JSON.parse(localStorage.getItem('gp_favs') || '[]'); } catch (e) { return []; } },
-  set favs(v) { localStorage.setItem('gp_favs', JSON.stringify(v)); }
+  set favs(v) { localStorage.setItem('gp_favs', JSON.stringify(v)); },
+  get llmKey() { return localStorage.getItem('gp_llm_key') || ''; },
+  set llmKey(v) { v ? localStorage.setItem('gp_llm_key', v) : localStorage.removeItem('gp_llm_key'); },
+  get llmProvider() { return localStorage.getItem('gp_llm_provider') || 'deepseek'; },
+  set llmProvider(v) { localStorage.setItem('gp_llm_provider', v); }
 };
 
 /* ---------------- 搜索 ---------------- */
@@ -417,6 +424,8 @@ async function load(stock) {
   state.stock = { ...stock, secucode: buildSecucode(stock) };
   LS.last = state.stock;
   state.newsCache = {};
+  state.basic = null;
+  state.flow = null;
   clearInterval(state.timer);
 
   renderQuoteLoading();
@@ -491,6 +500,7 @@ async function loadQuote(silent) {
       </div>`;
     $('#starBtn').addEventListener('click', toggleFav);
     $('#updateTime').textContent = '最后更新 ' + new Date().toLocaleString('zh-CN', { hour12: false });
+    if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
     if (!silent) $('#quoteCard').innerHTML = `<div class="errbox">行情加载失败<button onclick="loadQuote()">重试</button></div>`;
   }
@@ -634,7 +644,9 @@ async function loadBasic() {
         <div class="card-b">${lineChart(pts)}</div></div>`;
     }
 
+    state.basic = { pe, peTTM, pb, mcap: d.f116, sc, F, name: state.stock.name, code: state.stock.code };
     box.innerHTML = html;
+    if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
     box.innerHTML = `<div class="card"><div class="errbox">基本面加载失败：${esc(e.message)}<button onclick="loadBasic()">重试</button></div></div>`;
   }
@@ -779,7 +791,9 @@ async function loadFlow(silent) {
         </table></div></div>`;
     }
 
+    state.flow = { main: t ? num(t.f62) : null, ratio: t ? num(t.f184) : null, levels: t ? levels : null, sum5: kl.length ? sum(5) : null, sum10: kl.length ? sum(10) : null, sum20: kl.length ? sum(20) : null, streak, dir, lastDate: parsed.length ? parsed[parsed.length - 1].d : null };
     box.innerHTML = html;
+    if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
     if (!silent) box.innerHTML = `<div class="card"><div class="errbox">${esc(e.message)}<button onclick="loadFlow()">重试</button></div></div>`;
   }
@@ -876,6 +890,7 @@ async function loadNews() {
     state.newsCache.stock = pick(a).map(x => ({ ...x, ...analyze(x.title, x.content) }));
     state.newsCache.industry = pick(b).map(x => ({ ...x, ...analyze(x.title, x.content) }));
     renderNews();
+    if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
     box.innerHTML = `<div class="card"><div class="errbox">资讯加载失败<button onclick="loadNews()">重试</button></div></div>`;
   }
@@ -935,12 +950,148 @@ function renderNews() {
   }));
 }
 
+/* ---------------- 诊股（大模型） ---------------- */
+const LLM_PRESETS = {
+  deepseek: { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' },
+  moonshot: { name: 'Kimi', endpoint: 'https://api.moonshot.cn/v1/chat/completions', model: 'moonshot-v1-8k' },
+  qwen: { name: '通义千问', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus' },
+  openai: { name: 'OpenAI', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini' }
+};
+const SYS_PROMPT = '你是一名严谨、客观的证券分析师。请基于用户提供的真实行情与公开数据，给出结构化的今日个股诊断：多空判断明确、结合量价与资金面、给出关键参考位与操作提示、提示主要风险。语气克制不夸大，末尾必须注明"以上为基于公开数据的量化梳理，不构成任何投资建议"。';
+
+function buildDiagPrompt() {
+  const s = state.stock, q = state.quote, b = state.basic, f = state.flow;
+  if (!s) return '（请先搜索并加载一只股票）';
+  const L = [];
+  L.push(`请作为证券分析师，基于以下「${s.name}（${s.code}）」的真实行情数据，给出今日（${new Date().toLocaleDateString('zh-CN')}）的诊股结论。`);
+  L.push(''); L.push('【基本信息】');
+  L.push(`股票：${s.name}（${s.code}）  行业：${state.industry || '未知'}`);
+  if (q) {
+    const dg = Math.pow(10, q.f59 ?? 2);
+    const price = q.f43 / dg, chg = q.f170 / 100, prev = q.f60 / dg;
+    L.push(`现价：${price.toFixed(2)}元  涨跌幅：${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%  涨跌额：${(q.f169 / dg >= 0 ? '+' : '') + (q.f169 / dg).toFixed(2)}元`);
+    L.push(`今开/最高/最低：${(q.f46 / dg).toFixed(2)} / ${(q.f44 / dg).toFixed(2)} / ${(q.f45 / dg).toFixed(2)}  昨收：${prev.toFixed(2)}`);
+    L.push(`换手率：${(q.f168 / 100).toFixed(2)}%  量比：${(q.f50 / 100).toFixed(2)}  振幅：${(q.f171 / 100).toFixed(2)}%`);
+    L.push(`总市值：${money(q.f116)}  成交额：${money(q.f48)}`);
+  }
+  if (b) {
+    L.push(''); L.push('【基本面】');
+    L.push(`综合评级：${b.sc.grade}（${b.sc.total}分）— ${b.sc.comment}`);
+    L.push(`市盈率TTM：${b.peTTM ? b.peTTM.toFixed(2) : '—'}  市净率：${b.pb ? b.pb.toFixed(2) : '—'}  总市值：${money(b.mcap)}`);
+    L.push(`ROE：${pct(b.F.roe)}  毛利率：${pct(b.F.gross)}  净利率：${pct(b.F.net)}  负债率：${pct(b.F.debt)}`);
+    L.push(`营收同比：${pctSign(b.F.revG)}  净利同比：${pctSign(b.F.npG)}`);
+  } else {
+    L.push(''); L.push('【基本面】该股为港股/美股或非A股，暂无A股财报维度数据。');
+  }
+  if (f && (f.main != null || f.sum20 != null)) {
+    L.push(''); L.push('【资金面】');
+    if (f.main != null) L.push(`今日主力净${f.main >= 0 ? '流入' : '流出'}：${moneySign(f.main)}（占成交额${pctSign(f.ratio)}）`);
+    if (f.levels) L.push('今日分单：' + f.levels.map(([n, v]) => `${n} ${moneySign(v)}`).join('，'));
+    if (f.sum20 != null) L.push(`近5/10/20日主力净流入：${moneySign(f.sum5)} / ${moneySign(f.sum10)} / ${moneySign(f.sum20)}`);
+    if (f.streak > 0) L.push(`主力已连续 ${f.streak} 个交易日净${f.dir > 0 ? '流入' : '流出'}`);
+  }
+  const ns = state.newsCache.stock || [];
+  if (ns.length) {
+    const good = ns.filter(x => x.type === 'good').length, bad = ns.filter(x => x.type === 'bad').length, neu = ns.length - good - bad;
+    L.push(''); L.push('【新闻情绪】');
+    L.push(`近 ${ns.length} 条个股资讯：利好 ${good} ／ 利空 ${bad} ／ 中性 ${neu}`);
+    ns.slice(0, 6).forEach(x => L.push(`· [${x.type === 'good' ? '利好' : x.type === 'bad' ? '利空' : '中性'}] ${x.title}`));
+  }
+  L.push(''); L.push('【输出要求】');
+  L.push('请给出：1）今日多空强弱判断；2）量价与资金面解读；3）关键参考位与操作提示（仅供参考）；4）主要风险。控制在 400 字以内。');
+  return L.join('\n');
+}
+
+function refreshDiagPrompt() {
+  const el = $('#diagPrompt');
+  if (el) el.textContent = buildDiagPrompt();
+}
+
+function renderDiag() {
+  const box = $('#pane-diag');
+  if (!box) return;
+  const prov = LS.llmProvider || 'deepseek';
+  const key = LS.llmKey || '';
+  const prompt = buildDiagPrompt();
+  box.innerHTML = `
+    <div class="card"><div class="card-h"><h3>AI 诊股设置</h3><span class="hint">密钥仅存本机</span></div>
+      <div class="card-b diag-set">
+        <label class="dl">模型
+          <select id="llmProv">${Object.entries(LLM_PRESETS).map(([k, v]) => `<option value="${k}" ${k === prov ? 'selected' : ''}>${v.name}</option>`).join('')}</select>
+        </label>
+        <label class="dl">API Key
+          <input id="llmKey" type="password" inputmode="text" autocomplete="off" placeholder="sk-… 仅存于本机浏览器，不会上传" value="${esc(key)}">
+        </label>
+        <button id="llmSave" class="btn-sm">保存密钥</button>
+      </div>
+      <div class="score-note" style="border-top:1px solid #eee">未填 Key 也能用：下方「复制提示词」后粘贴到任意大模型（ChatGPT / Kimi / 通义 / 文心）即可得到诊断；填了 Key 则可一键诊断。</div>
+    </div>
+    <div class="card"><div class="card-h"><h3>今日诊股数据（已自动汇总）</h3><span class="hint">${new Date().toLocaleDateString('zh-CN')}</span></div>
+      <div class="card-b">
+        <pre id="diagPrompt" class="diag-pre"></pre>
+        <div class="diag-actions">
+          <button id="diagCopy" class="btn-sm">复制提示词</button>
+          <button id="diagRun" class="btn-sm primary">开始 AI 诊断</button>
+        </div>
+        <div id="diagMsg" class="diag-msg"></div>
+      </div>
+    </div>
+    <div class="card" id="diagResultCard" hidden><div class="card-h"><h3>AI 诊断结论</h3></div>
+      <div class="card-b"><div id="diagResult" class="diag-result"></div></div>
+    </div>`;
+  $('#diagPrompt').textContent = prompt;
+
+  $('#llmSave').addEventListener('click', () => {
+    LS.llmProvider = $('#llmProv').value;
+    LS.llmKey = $('#llmKey').value.trim();
+    const m = $('#diagMsg'); m.textContent = '已保存（密钥仅存于本机浏览器，不会上传到任何服务器）。'; m.className = 'diag-msg ok';
+  });
+  $('#diagCopy').addEventListener('click', async () => {
+    const txt = $('#diagPrompt').textContent;
+    try { await navigator.clipboard.writeText(txt); const m = $('#diagMsg'); m.textContent = '提示词已复制到剪贴板，去大模型粘贴即可。'; m.className = 'diag-msg ok'; }
+    catch (e) { const m = $('#diagMsg'); m.textContent = '复制失败，请长按上方文本手动复制。'; m.className = 'diag-msg'; }
+  });
+  $('#diagRun').addEventListener('click', diagnose);
+}
+
+async function diagnose() {
+  const key = LS.llmKey || '';
+  const prov = LLM_PRESETS[LS.llmProvider || 'deepseek'] || LLM_PRESETS.deepseek;
+  const card = $('#diagResultCard'), res = $('#diagResult'), msg = $('#diagMsg');
+  if (!key) { msg.textContent = '请先填写 API Key 并点「保存密钥」（或复制提示词到任意大模型）。'; msg.className = 'diag-msg'; $('#llmKey').focus(); return; }
+  const prompt = buildDiagPrompt();
+  card.hidden = false; res.textContent = '诊断中…（约 10-30 秒）'; res.className = 'diag-result loading'; msg.textContent = '';
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 70000);
+  try {
+    const r = await fetch(prov.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ model: prov.model, messages: [{ role: 'system', content: SYS_PROMPT }, { role: 'user', content: prompt }], temperature: 0.6, stream: false }),
+      signal: ctrl.signal
+    });
+    clearTimeout(to);
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('接口返回 ' + r.status + (t ? '：' + t.slice(0, 160) : '')); }
+    const j = await r.json();
+    const txt = j?.choices?.[0]?.message?.content || '（模型未返回内容）';
+    res.textContent = txt; res.className = 'diag-result';
+  } catch (e) {
+    clearTimeout(to);
+    res.className = 'diag-result err';
+    if (e.name === 'AbortError') res.textContent = '请求超时（70秒）。请检查网络或换用其他模型。';
+    else res.textContent = '诊断失败：' + e.message + '\n\n提示：若报 CORS / 跨域错误，说明该模型不支持浏览器直连，请改用「复制提示词」方式。';
+    msg.textContent = '若密钥无误但仍失败，多为跨域(CORS)限制，建议复制提示词到网页版大模型。'; msg.className = 'diag-msg';
+  }
+}
+
 /* ---------------- Tab 切换 ---------------- */
 $$('.tab').forEach(t => t.addEventListener('click', () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
   t.classList.add('active');
   const k = t.dataset.tab;
-  ['basic', 'flow', 'hold', 'news'].forEach(x => $('#pane-' + x).hidden = x !== k);
+  state.activeTab = k;
+  ['basic', 'flow', 'hold', 'news', 'diag'].forEach(x => $('#pane-' + x).hidden = x !== k);
+  if (k === 'diag') renderDiag();
   document.scrollingElement.scrollTo({ top: 0, behavior: 'smooth' });
 }));
 

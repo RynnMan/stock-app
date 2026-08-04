@@ -42,6 +42,9 @@ function timeAgo(str) {
   return str.slice(5, 16);
 }
 
+/** 日期字符串 → 时间戳（用于排序），解析失败返回 0 */
+const _dts = s => { const d = new Date(String(s || '').replace(/-/g, '/')); return isNaN(d.getTime()) ? 0 : d.getTime(); };
+
 /* ---------------- JSONP ---------------- */
 const _cache = new Map();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -166,7 +169,10 @@ const API = {
       param: { cmsArticleWebOld: { searchScope: 'default', sort: 'default', pageIndex: 1, pageSize: size, preTag: '<em>', postTag: '</em>' } }
     };
     return jsonp('https://search-api-web.eastmoney.com/search/jsonp?param=' + encodeURIComponent(JSON.stringify(p)), 'cb', 180000);
-  }
+  },
+
+  // 限售股解禁（东财数据中心 reportName=RPT_LIFT_STOCK）
+  unlock: code => jsonp(`https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STOCK&columns=SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,FREE_SHARES,NON_FREE_SHARES,ADD_LISTING_SHARES,ADD_LISTSHARES_RATIO,ADD_LISTING_CAP,CLOSE_PRICE,TOTAL_SHARES,CIRCLE_SHARES&filter=(SECURITY_CODE%3D%22${code}%22)&pageSize=20&sortColumns=FREE_DATE&sortTypes=-1&source=WEB&client=WEB`, 'callback', 600000)
 };
 
 /* ---------------- 利好 / 利空 关键词词典 ---------------- */
@@ -433,7 +439,7 @@ async function load(stock) {
   if (state.timerFlow) clearInterval(state.timerFlow);
 
   renderQuoteLoading();
-  ['basic', 'flow', 'hold', 'news'].forEach(k => { $('#pane-' + k).innerHTML = '<div class="card"><div class="loading">加载中…</div></div>'; });
+  ['basic', 'flow', 'hold', 'news', 'risk'].forEach(k => { $('#pane-' + k).innerHTML = '<div class="card"><div class="loading">加载中…</div></div>'; });
 
   // 错峰发起，避免瞬时并发被行情网关限流
   loadQuote();
@@ -441,6 +447,7 @@ async function load(stock) {
   sleep(600).then(loadBasic);
   sleep(1000).then(loadHold);
   sleep(1400).then(loadIndustryThenNews);
+  sleep(1800).then(loadRisk);
 
   state.timer = setInterval(() => { if (!document.hidden) loadQuote(true); }, 30000);
   // 资金流仅在该页激活时每 90 秒刷新，降低行情网关限流概率（资金页无备用源）
@@ -974,6 +981,92 @@ function renderNews() {
   }));
 }
 
+/* ---------------- 风险（减持 / 解禁） ---------------- */
+const RISK_KW = /减持|质押|解禁|清仓|违规|立案|处罚|冻结|商誉减值|业绩变脸|退市/;
+
+async function loadRisk() {
+  const box = $('#pane-risk');
+  if (!isA()) { box.innerHTML = '<div class="card"><div class="loading">该市场暂不支持减持 / 解禁等 A 股风险披露数据</div></div>'; return; }
+  try {
+    const [ul, jc, zy] = await Promise.allSettled([
+      API.unlock(state.stock.code),
+      API.news(state.stock.name + ' 减持', 20),
+      API.news(state.stock.name + ' 质押', 15)
+    ]);
+    const ulRows = ul.status === 'fulfilled' ? (ul.value?.result?.data || []) : [];
+    const pick = r => (r.status === 'fulfilled' ? (r.value?.result?.cmsArticleWebOld || []) : []);
+    // 合并减持 / 质押资讯，去重、按日期倒序
+    const nm = state.stock.name || '';
+    let news = [...pick(jc), ...pick(zy)].map(x => ({ ...x, ...analyze(x.title, x.content) }));
+    const seen = new Set();
+    news = news.filter(x => {
+      const k = (x.title || '').trim();
+      if (seen.has(k)) return false; seen.add(k); return true;
+    }).filter(x => RISK_KW.test(x.title || '') && (nm ? (x.title || '').includes(nm) : true));
+    news.sort((a, b) => _dts(b.date) - _dts(a.date));
+
+    let html = '';
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    /* 解禁 */
+    if (ulRows.length) {
+      const future = ulRows.filter(r => (r.FREE_DATE || '').slice(0, 10) >= todayStr);
+      const in90 = future.filter(r => {
+        const days = (_dts((r.FREE_DATE || '').slice(0, 10)) - _dts(todayStr)) / 86400000;
+        return days <= 90;
+      });
+      const maxCap = Math.max(...ulRows.map(r => num(r.ADD_LISTING_CAP) || 0));
+      html += `<div class="card"><div class="card-h"><h3>限售股解禁</h3><span class="hint">近 ${ulRows.length} 次</span></div>
+        <div class="card-b">
+          <div class="score-note" style="border-top:0;padding-top:0">未来 90 日内有 <b>${in90.length}</b> 笔解禁安排${maxCap ? `，单笔最大解禁市值约 <b>${money(maxCap * 1e4)}</b>` : ''}。解禁新增可流通供给，短期或对股价形成压制。
+          <div class="legend" style="justify-content:flex-start;gap:10px;margin-top:8px"><span><i style="background:var(--warn)"></i>待解禁</span><span><i style="background:var(--weak)"></i>已解禁</span></div></div>
+          <table class="tbl"><tr><th>解禁日</th><th>解禁股数</th><th>解禁市值</th><th>占流通</th></tr>`;
+      ulRows.slice(0, 10).forEach(r => {
+        const d = (r.FREE_DATE || '').slice(0, 10);
+        const isFuture = d >= todayStr;
+        const sh = num(r.ADD_LISTING_SHARES), cap = num(r.ADD_LISTING_CAP), ratio = num(r.ADD_LISTSHARES_RATIO);
+        const shTxt = sh == null ? '--' : (sh >= 10000 ? (sh / 10000).toFixed(2) + '亿股' : sh.toFixed(0) + '万股');
+        const capTxt = cap == null ? '--' : (cap / 10000).toFixed(2) + '亿元';
+        html += `<tr>
+          <td>${d.slice(5)}<br><span class="mini ${isFuture ? 'future' : 'past'}">${isFuture ? '待解禁' : '已解禁'}</span></td>
+          <td>${shTxt}</td>
+          <td>${capTxt}</td>
+          <td>${ratio == null ? '--' : ratio.toFixed(2) + '%'}</td></tr>`;
+      });
+      html += `</table></div></div>`;
+    } else {
+      html += `<div class="card"><div class="card-h"><h3>限售股解禁</h3></div>
+        <div class="card-b"><div class="score-note" style="border-top:0;padding-top:0">当前未检索到该股限售股解禁安排（可能已全流通，或无近期解禁批次）。</div></div></div>`;
+    }
+
+    /* 减持 / 质押 */
+    if (news.length) {
+      html += `<div class="card"><div class="card-h"><h3>减持 / 质押预警</h3><span class="hint">来自公告与资讯</span></div>
+        <div class="card-b" id="riskNews">`;
+      news.slice(0, 15).forEach(x => {
+        const title = x.title || '';
+        const tag = /质押/.test(title) ? '质押' : /减持/.test(title) ? '减持' : '其他';
+        const badge = tag === '减持' ? '<span class="badge bad">减持</span>' : tag === '质押' ? '<span class="badge warn">质押</span>' : '<span class="badge neu">风险</span>';
+        html += `<a class="news-item" href="${esc(x.url)}" target="_blank" rel="noopener">
+          <div class="news-title">${escKeepEm(title)}</div>
+          <div class="news-meta">${badge}<span>${esc(x.mediaName || '')}</span><span>${timeAgo(x.date)}</span></div>
+        </a>`;
+      });
+      html += `</div></div>`;
+    } else {
+      html += `<div class="card"><div class="card-h"><h3>减持 / 质押预警</h3></div>
+        <div class="card-b"><div class="score-note" style="border-top:0;padding-top:0">暂未检索到近期大股东 / 高管减持或股权质押相关公告。</div></div></div>`;
+    }
+
+    state.risk = { ulCount: ulRows.length, newsCount: news.length };
+    box.innerHTML = html;
+    if (state.activeTab === 'diag') refreshDiagPrompt();
+  } catch (e) {
+    box.innerHTML = `<div class="card"><div class="errbox">风险数据加载失败：${esc(e.message)}<button onclick="loadRisk()">重试</button></div></div>`;
+  }
+}
+window.loadRisk = loadRisk;
+
 /* ---------------- 诊股（大模型） ---------------- */
 const LLM_PRESETS = {
   deepseek: { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' },
@@ -1020,6 +1113,11 @@ function buildDiagPrompt() {
     L.push(''); L.push('【新闻情绪】');
     L.push(`近 ${ns.length} 条个股资讯：利好 ${good} ／ 利空 ${bad} ／ 中性 ${neu}`);
     ns.slice(0, 6).forEach(x => L.push(`· [${x.type === 'good' ? '利好' : x.type === 'bad' ? '利空' : '中性'}] ${x.title}`));
+  }
+  const rk = state.risk;
+  if (rk) {
+    L.push(''); L.push('【风险信号】');
+    L.push(`限售股解禁记录：${rk.ulCount} 条；近期减持 / 质押类公告：${rk.newsCount} 条`);
   }
   L.push(''); L.push('【输出要求】');
   L.push('请给出：1）今日多空强弱判断；2）量价与资金面解读；3）关键参考位与操作提示（仅供参考）；4）主要风险。');
@@ -1121,12 +1219,13 @@ $$('.tab').forEach(t => t.addEventListener('click', () => {
   t.classList.add('active');
   const k = t.dataset.tab;
   state.activeTab = k;
-  ['basic', 'flow', 'hold', 'news', 'diag'].forEach(x => $('#pane-' + x).hidden = x !== k);
+  ['basic', 'flow', 'hold', 'news', 'risk', 'diag'].forEach(x => $('#pane-' + x).hidden = x !== k);
   if (k === 'diag') renderDiag();
   // 失败/未加载的数据页，切到时自动重试（资金页无备用源，限流后可在这一步自愈）
-  if ((k === 'flow' || k === 'hold' || k === 'news') && paneNeedsReload(k)) {
+  if ((k === 'flow' || k === 'hold' || k === 'news' || k === 'risk') && paneNeedsReload(k)) {
     if (k === 'flow') loadFlow();
     else if (k === 'hold') loadHold();
+    else if (k === 'risk') loadRisk();
     else loadIndustryThenNews();
   }
   document.scrollingElement.scrollTo({ top: 0, behavior: 'smooth' });

@@ -172,7 +172,8 @@ const API = {
   },
 
   // 限售股解禁（东财数据中心 reportName=RPT_LIFT_STOCK）
-  unlock: code => jsonp(`https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STOCK&columns=SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,FREE_SHARES,NON_FREE_SHARES,ADD_LISTING_SHARES,ADD_LISTSHARES_RATIO,ADD_LISTING_CAP,CLOSE_PRICE,TOTAL_SHARES,CIRCLE_SHARES&filter=(SECURITY_CODE%3D%22${code}%22)&pageSize=20&sortColumns=FREE_DATE&sortTypes=-1&source=WEB&client=WEB`, 'callback', 600000)
+  unlock: code => jsonp(`https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STOCK&columns=SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,FREE_SHARES,NON_FREE_SHARES,ADD_LISTING_SHARES,ADD_LISTSHARES_RATIO,ADD_LISTING_CAP,CLOSE_PRICE,TOTAL_SHARES,CIRCLE_SHARES&filter=(SECURITY_CODE%3D%22${code}%22)&pageSize=20&sortColumns=FREE_DATE&sortTypes=-1&source=WEB&client=WEB`, 'callback', 600000),
+
 };
 
 /* ---------------- 利好 / 利空 关键词词典 ---------------- */
@@ -666,6 +667,17 @@ async function loadBasic() {
 }
 window.loadBasic = loadBasic;
 
+/* 带重试的数据拉取（东财数据中心偶发限流会返回空 result，需重试） */
+async function withRetry(fn, n = 3) {
+  let e;
+  for (let i = 0; i < n; i++) {
+    try { const r = await fn(); if (r && r.result && r.result.data && r.result.data.length) return r; }
+    catch (err) { e = err; }
+    if (i < n - 1) await sleep(700 + i * 700);
+  }
+  return null;
+}
+
 function kvItem(k, v, c = '') { return `<div class="item"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`; }
 
 /** TTM 归母净利：最新累计 + 上年年报 - 上年同期 */
@@ -1120,7 +1132,7 @@ function buildDiagPrompt() {
     L.push(`限售股解禁记录：${rk.ulCount} 条；近期减持 / 质押类公告：${rk.newsCount} 条`);
   }
   L.push(''); L.push('【输出要求】');
-  L.push('请给出：1）今日多空强弱判断；2）量价与资金面解读；3）关键参考位与操作提示（仅供参考）；4）主要风险。');
+  L.push('请给出：1）今日多空强弱判断；2）量价与资金面解读；3）关键参考位与操作提示（仅供参考）；4）主要风险；5）行业地位点评——结合你对这家公司所处行业及竞争格局的了解，说明其梯队位置（如是否为龙头/第一梯队）、市场份额或市值占比对应的竞争优势或隐忧，以及行业景气度对其的影响。');
   return L.join('\n');
 }
 

@@ -44,6 +44,9 @@ function timeAgo(str) {
 
 /** 日期字符串 → 时间戳（用于排序），解析失败返回 0 */
 const _dts = s => { const d = new Date(String(s || '').replace(/-/g, '/')); return isNaN(d.getTime()) ? 0 : d.getTime(); };
+/** 本地日期 → YYYY-MM-DD */
+const pad2 = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 /* ---------------- JSONP ---------------- */
 const _cache = new Map();
@@ -173,6 +176,9 @@ const API = {
 
   // 限售股解禁（东财数据中心 reportName=RPT_LIFT_STOCK）
   unlock: code => jsonp(`https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STOCK&columns=SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,FREE_SHARES,NON_FREE_SHARES,ADD_LISTING_SHARES,ADD_LISTSHARES_RATIO,ADD_LISTING_CAP,CLOSE_PRICE,TOTAL_SHARES,CIRCLE_SHARES&filter=(SECURITY_CODE%3D%22${code}%22)&pageSize=20&sortColumns=FREE_DATE&sortTypes=-1&source=WEB&client=WEB`, 'callback', 600000),
+
+  // 大事提醒（东财个股事件日历 reportName=RPT_STOCKCALENDAR：预约披露日 / 分红 / 股东大会 / 停牌复牌 / 质押 / 公告等）
+  eventCalendar: (code, from) => jsonp(`https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&filter=(SECURITY_CODE%3D%22${code}%22)(NOTICE_DATE%3E%3D%27${from}%27)&pageSize=200&sortColumns=NOTICE_DATE&sortTypes=-1&source=WEB&client=WEB`, 'callback', 600000),
 
 };
 
@@ -993,32 +999,65 @@ function renderNews() {
   }));
 }
 
-/* ---------------- 风险（减持 / 解禁） ---------------- */
-const RISK_KW = /减持|质押|解禁|清仓|违规|立案|处罚|冻结|商誉减值|业绩变脸|退市/;
+/* ---------------- 风险（减持 / 解禁 / 公告） ---------------- */
 
 async function loadRisk() {
   const box = $('#pane-risk');
   if (!isA()) { box.innerHTML = '<div class="card"><div class="loading">该市场暂不支持减持 / 解禁等 A 股风险披露数据</div></div>'; return; }
   try {
-    const [ul, jc, zy] = await Promise.allSettled([
+    // 事件日历窗口：近一年 + 全部未来事项
+    const fromDate = (() => { const d = new Date(); d.setDate(d.getDate() - 365); return ymd(d); })();
+    const [ul, cal] = await Promise.allSettled([
       API.unlock(state.stock.code),
-      API.news(state.stock.name + ' 减持', 20),
-      API.news(state.stock.name + ' 质押', 15)
+      API.eventCalendar(state.stock.code, fromDate)
     ]);
     const ulRows = ul.status === 'fulfilled' ? (ul.value?.result?.data || []) : [];
-    const pick = r => (r.status === 'fulfilled' ? (r.value?.result?.cmsArticleWebOld || []) : []);
-    // 合并减持 / 质押资讯，去重、按日期倒序
-    const nm = state.stock.name || '';
-    let news = [...pick(jc), ...pick(zy)].map(x => ({ ...x, ...analyze(x.title, x.content) }));
-    const seen = new Set();
-    news = news.filter(x => {
-      const k = (x.title || '').trim();
-      if (seen.has(k)) return false; seen.add(k); return true;
-    }).filter(x => RISK_KW.test(x.title || '') && (nm ? (x.title || '').includes(nm) : true));
-    news.sort((a, b) => _dts(b.date) - _dts(a.date));
+
+    /* 大事提醒（事件日历） */
+    const calRaw = cal.status === 'fulfilled' ? (cal.value?.result?.data || []) : [];
+    const todayYmd = ymd(new Date());
+    const evAll = calRaw.map(r => ({
+      date: (r.NOTICE_DATE || '').slice(0, 10),
+      type: r.EVENT_TYPE || '',
+      content: r.LEVEL1_CONTENT || ''
+    })).filter(r => r.date);
+    // 未来待办（按日期升序）：财报预约披露 / 分红 / 股东大会 / 停复牌 / 解禁等
+    const evFuture = evAll.filter(r => r.date >= todayYmd).sort((a, b) => a.date.localeCompare(b.date));
+    // 近期动态：按类型+日期去重
+    const evSeen = new Set();
+    const evRecent = evAll.filter(r => r.date < todayYmd)
+      .filter(r => { const k = r.type + '|' + r.date; if (evSeen.has(k)) return false; evSeen.add(k); return true; })
+      .slice(0, 14);
+    const evBadge = t => {
+      if (t === '预约披露日' || t === '股东大会') return 'cal';
+      if (t === '分红') return 'div';
+      if (t === '停牌' || t === '复牌' || t === '限售股解禁') return 'warn';
+      return 'neu';
+    };
+    const evRow = (e, isFuture) => `
+      <div class="ev-row ${isFuture ? 'future' : ''}">
+        <div class="ev-date"><b>${esc(e.date.slice(5))}</b>${isFuture ? '<span class="mini future">待办</span>' : ''}</div>
+        <div class="ev-main"><span class="badge ${evBadge(e.type)}">${esc(e.type)}</span>
+          <span class="ev-txt">${esc(e.content)}</span></div>
+      </div>`;
 
     let html = '';
     const todayStr = new Date().toISOString().slice(0, 10);
+
+    /* 大事提醒 */
+    {
+      let inner = '';
+      if (evFuture.length) {
+        inner += `<div class="score-note" style="border-top:0;padding-top:0">未来 <b>${evFuture.length}</b> 项待办提醒（按日期升序）：</div>`;
+        inner += `<div class="ev-list">${evFuture.map(e => evRow(e, true)).join('')}</div>`;
+      }
+      if (evRecent.length) {
+        inner += `<div class="score-note">近一年共 <b>${evRecent.length}</b> 条公司动态：</div>`;
+        inner += `<div class="ev-list">${evRecent.map(e => evRow(e, false)).join('')}</div>`;
+      }
+      html += `<div class="card"><div class="card-h"><h3>大事提醒</h3><span class="hint">预约披露·分红·股东大会·停复牌</span></div>
+        <div class="card-b">${inner || '<div class="score-note" style="border-top:0">近一年暂无重大事件提醒。</div>'}</div></div>`;
+    }
 
     /* 解禁 */
     if (ulRows.length) {
@@ -1051,26 +1090,9 @@ async function loadRisk() {
         <div class="card-b"><div class="score-note" style="border-top:0;padding-top:0">当前未检索到该股限售股解禁安排（可能已全流通，或无近期解禁批次）。</div></div></div>`;
     }
 
-    /* 减持 / 质押 */
-    if (news.length) {
-      html += `<div class="card"><div class="card-h"><h3>减持 / 质押预警</h3><span class="hint">来自公告与资讯</span></div>
-        <div class="card-b" id="riskNews">`;
-      news.slice(0, 15).forEach(x => {
-        const title = x.title || '';
-        const tag = /质押/.test(title) ? '质押' : /减持/.test(title) ? '减持' : '其他';
-        const badge = tag === '减持' ? '<span class="badge bad">减持</span>' : tag === '质押' ? '<span class="badge warn">质押</span>' : '<span class="badge neu">风险</span>';
-        html += `<a class="news-item" href="${esc(x.url)}" target="_blank" rel="noopener">
-          <div class="news-title">${escKeepEm(title)}</div>
-          <div class="news-meta">${badge}<span>${esc(x.mediaName || '')}</span><span>${timeAgo(x.date)}</span></div>
-        </a>`;
-      });
-      html += `</div></div>`;
-    } else {
-      html += `<div class="card"><div class="card-h"><h3>减持 / 质押预警</h3></div>
-        <div class="card-b"><div class="score-note" style="border-top:0;padding-top:0">暂未检索到近期大股东 / 高管减持或股权质押相关公告。</div></div></div>`;
-    }
+    /* 上市公司公告 / 减持预警（已取消，与大事提醒合并展示） */
 
-    state.risk = { ulCount: ulRows.length, newsCount: news.length };
+    state.risk = { ulCount: ulRows.length, evFuture: evFuture.length, evRecent: evRecent.length };
     box.innerHTML = html;
     if (state.activeTab === 'diag') refreshDiagPrompt();
   } catch (e) {
@@ -1129,7 +1151,7 @@ function buildDiagPrompt() {
   const rk = state.risk;
   if (rk) {
     L.push(''); L.push('【风险信号】');
-    L.push(`限售股解禁记录：${rk.ulCount} 条；近期减持 / 质押类公告：${rk.newsCount} 条`);
+    L.push(`限售股解禁记录：${rk.ulCount} 条；大事提醒：未来待办 ${rk.evFuture ?? 0} 项（如财报预约披露、分红股权登记/除权除息、股东大会等），近一年公司动态 ${rk.evRecent ?? 0} 条`);
   }
   L.push(''); L.push('【输出要求】');
   L.push('请给出：1）今日多空强弱判断；2）量价与资金面解读；3）关键参考位与操作提示（仅供参考）；4）主要风险；5）行业地位点评——结合你对这家公司所处行业及竞争格局的了解，说明其梯队位置（如是否为龙头/第一梯队）、市场份额或市值占比对应的竞争优势或隐忧，以及行业景气度对其的影响。');

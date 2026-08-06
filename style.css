@@ -174,12 +174,25 @@ a{color:inherit;text-decoration:none}
 .news-meta{display:flex;align-items:center;gap:8px;margin-top:7px;font-size:11.5px;color:var(--weak)}
 .badge{font-size:11px;padding:2px 7px;border-radius:5px;font-weight:600;flex:none}
 .badge.good{background:#fff0f0;color:var(--up)}
-.badge.bad{background:#e9f8f0;color:var(--down)}
 .badge.neu{background:#f0f1f3;color:var(--sub)}
 .badge.warn{background:#fff4e6;color:var(--warn)}
+.badge.cal{background:var(--brand-soft);color:var(--brand)}
+.badge.div{background:#fff0f0;color:var(--up)}
 .mini{display:inline-block;font-size:10px;padding:1px 5px;border-radius:4px;margin-top:3px;line-height:1.4}
 .mini.future{background:#fff1f0;color:var(--warn)}
 .mini.past{background:#f0f1f3;color:var(--weak)}
+
+/* ---------- 大事提醒时间轴 ---------- */
+.ev-list{margin-top:4px}
+.ev-row{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.ev-row:last-child{border-bottom:0}
+.ev-row.future{background:linear-gradient(90deg,rgba(240,140,0,.06),transparent 55%);border-radius:6px;padding-left:6px;margin-left:-6px}
+.ev-date{flex:none;width:48px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:1px}
+.ev-date b{font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums;font-weight:600;line-height:1.2}
+.ev-row.future .ev-date b{color:var(--warn)}
+.ev-main{flex:1;min-width:0;display:flex;align-items:baseline;flex-wrap:wrap;gap:6px}
+.ev-main .badge{flex:none}
+.ev-txt{font-size:12.5px;color:var(--sub);line-height:1.55}
 
 .kw{color:var(--weak);font-size:11px;margin-left:auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .more-btn{display:block;width:100%;text-align:center;padding:11px;color:var(--brand);font-size:13px;border-top:1px solid var(--line)}
